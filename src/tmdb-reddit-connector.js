@@ -97,23 +97,79 @@ async function getRedditAccessToken() {
 /**
  * Search Reddit for media discussions with improved search terms
  */
+/**
+ * Get Reddit access token with enhanced error logging
+ */
+async function getRedditAccessToken() {
+  // Check if token exists and is still valid (with 5-minute buffer)
+  if (redditAccessToken && tokenExpiry > (Date.now() + 300000)) {
+    console.log("✅ Using existing Reddit access token");
+    return redditAccessToken;
+  }
+  
+  try {
+    console.log("🔑 Getting new Reddit access token...");
+    console.log(`Using credentials: Client ID: ${REDDIT_CLIENT_ID.substring(0, 4)}... and username: ${REDDIT_USERNAME}`);
+    
+    const response = await axios({
+      method: 'post',
+      url: 'https://www.reddit.com/api/v1/access_token',
+      auth: {
+        username: REDDIT_CLIENT_ID,
+        password: REDDIT_CLIENT_SECRET
+      },
+      data: `grant_type=password&username=${encodeURIComponent(REDDIT_USERNAME)}&password=${encodeURIComponent(REDDIT_PASSWORD)}`,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': REDDIT_USER_AGENT
+      }
+    });
+    
+    console.log("Reddit auth response received:", JSON.stringify(response.data, null, 2));
+    
+    if (response.data && response.data.access_token) {
+      redditAccessToken = response.data.access_token;
+      tokenExpiry = Date.now() + (response.data.expires_in * 1000);
+      console.log(`✅ Reddit access token obtained, expires in ${response.data.expires_in} seconds`);
+      return redditAccessToken;
+    } else {
+      throw new Error('Invalid response from Reddit API: ' + JSON.stringify(response.data));
+    }
+  } catch (error) {
+    console.error('❌ Failed to get Reddit access token:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+    }
+    throw error;
+  }
+}
+
+/**
+ * Search Reddit for media discussions with extensive logging
+ */
 async function searchRedditForMedia(mediaTitle) {
   try {
+    console.log(`🔍 Preparing to search Reddit for: "${mediaTitle}"`);
     const token = await getRedditAccessToken();
     
-    // Sanitize the title by removing special characters and extra spaces
+    // Log the first 5 characters of the token for debugging
+    console.log(`Using token: ${token.substring(0, 5)}...`);
+    
+    // Sanitize the title for a better search
     const sanitizedTitle = mediaTitle.replace(/[^\w\s]/gi, '').trim();
     
-    // Create search query
+    // Try different search approaches
+    // Approach 1: Exact title search
     const searchQuery = `"${sanitizedTitle}"`;
-    console.log(`🔍 Searching Reddit for: ${searchQuery}`);
+    console.log(`Searching Reddit with query: ${searchQuery}`);
     
     const response = await axios.get('https://oauth.reddit.com/search', {
       params: {
         q: searchQuery,
         sort: 'relevance',
         limit: 10,
-        t: 'month'
+        t: 'year'
       },
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -122,23 +178,72 @@ async function searchRedditForMedia(mediaTitle) {
     });
     
     if (response.data && response.data.data && response.data.data.children) {
-      console.log(`Found ${response.data.data.children.length} Reddit posts for "${mediaTitle}"`);
-      return response.data.data.children;
+      const results = response.data.data.children;
+      console.log(`Found ${results.length} Reddit posts for "${mediaTitle}"`);
+      
+      // Log the titles of posts found for debugging
+      if (results.length > 0) {
+        console.log("Post titles found:");
+        results.forEach((post, index) => {
+          console.log(`  ${index + 1}. "${post.data.title}" in r/${post.data.subreddit}`);
+        });
+      } else {
+        console.log("No relevant posts found. Trying a broader search...");
+        
+        // Approach 2: Broader search with just the title without quotes
+        console.log(`Broader search for: ${sanitizedTitle}`);
+        
+        const broadResponse = await axios.get('https://oauth.reddit.com/search', {
+          params: {
+            q: sanitizedTitle,
+            sort: 'relevance',
+            limit: 15,
+            t: 'year'
+          },
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'User-Agent': REDDIT_USER_AGENT
+          }
+        });
+        
+        if (broadResponse.data && broadResponse.data.data && broadResponse.data.data.children.length > 0) {
+          const broadResults = broadResponse.data.data.children;
+          console.log(`Broader search found ${broadResults.length} posts`);
+          
+          console.log("Broader search post titles:");
+          broadResults.forEach((post, index) => {
+            console.log(`  ${index + 1}. "${post.data.title}" in r/${post.data.subreddit}`);
+          });
+          
+          return broadResults;
+        } else {
+          console.log("Even broader search found no results");
+          return [];
+        }
+      }
+      
+      return results;
     } else {
-      console.log(`No Reddit posts found for "${mediaTitle}"`);
+      console.log(`No Reddit data found for "${mediaTitle}"`);
       return [];
     }
   } catch (error) {
     console.error(`❌ Error searching Reddit for ${mediaTitle}:`, error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response headers:', JSON.stringify(error.response.headers, null, 2));
+      console.error('Response data:', JSON.stringify(error.response.data, null, 2));
+    }
     return [];
   }
 }
 
 /**
- * Fetch comments for a Reddit post
+ * Fetch comments for a Reddit post with better debugging
  */
 async function fetchRedditComments(postId) {
   try {
+    console.log(`📝 Fetching comments for post ID: ${postId}`);
     const token = await getRedditAccessToken();
     
     const response = await axios.get(`https://oauth.reddit.com/comments/${postId}`, {
@@ -153,16 +258,31 @@ async function fetchRedditComments(postId) {
     
     // Reddit returns an array with post data and comments
     if (response.data && response.data.length > 1) {
-      return response.data[1].data.children.map(child => child.data);
+      const comments = response.data[1].data.children.map(child => child.data);
+      console.log(`Retrieved ${comments.length} comments for post ID ${postId}`);
+      
+      // Log a few comment snippets for debugging
+      if (comments.length > 0) {
+        console.log("Sample comments:");
+        comments.slice(0, 3).forEach((comment, index) => {
+          const snippet = comment.body ? comment.body.substring(0, 50) + "..." : "No content";
+          console.log(`  ${index + 1}. ${snippet}`);
+        });
+      }
+      
+      return comments;
+    } else {
+      console.log(`No comments found for post ID ${postId}`);
+      return [];
     }
-    
-    return [];
   } catch (error) {
     console.error(`❌ Error fetching comments for post ${postId}:`, error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+    }
     return [];
   }
 }
-
 /**
  * Check if text likely contains spoilers
  */
@@ -187,7 +307,7 @@ function hasSpoilerContent(text, mediaTitle) {
   
   // Check for direct spoiler indicators
   return spoilerKeywords.some(keyword => lowerText.includes(keyword));
-}
+} 
 
 /**
  * Extract potential spoiler keywords from text
@@ -494,3 +614,63 @@ if (require.main === module) {
 module.exports = {
   updateDatabase
 };
+
+/**
+ * Special test function to debug Reddit integration with a single movie
+ */
+async function testSingleMovie() {
+  try {
+    console.log('🧪 Starting Reddit integration test with a single movie...');
+    
+    // Get a popular movie from the database
+    const mediaQuery = await db.collection('media')
+      .where('mediaType', '==', 'movie')  // Get a movie specifically
+      .orderBy('popularity', 'desc')      // Sort by popularity
+      .limit(1)                           // Just get the most popular one
+      .get();
+    
+    if (mediaQuery.empty) {
+      console.log('❌ No movies found in the database');
+      return;
+    }
+    
+    const mediaDoc = mediaQuery.docs[0];
+    const mediaData = mediaDoc.data();
+    
+    console.log(`🎬 Testing with movie: ${mediaData.title} (ID: ${mediaDoc.id})`);
+    
+    // Run the collectSpoilers function on this movie
+    await collectSpoilers(mediaDoc.id);
+    
+    console.log('✅ Test completed');
+  } catch (error) {
+    console.error('❌ Error in test:', error);
+  }
+}
+
+// Add this at the end of your file to expose the test function
+if (require.main === module) {
+  // Check if we're running a test
+  if (process.argv.includes('--test-reddit')) {
+    testSingleMovie()
+      .then(() => {
+        console.log('✅ Reddit test completed');
+        process.exit(0);
+      })
+      .catch(error => {
+        console.error('❌ Fatal error in Reddit test:', error);
+        process.exit(1);
+      });
+  } else {
+    // Normal operation
+    updateDatabase()
+      .then(() => {
+        console.log('✅ Script completed successfully');
+        process.exit(0);
+      })
+      .catch(error => {
+        console.error('❌ Fatal error:', error);
+        process.exit(1);
+      });
+  }
+}
